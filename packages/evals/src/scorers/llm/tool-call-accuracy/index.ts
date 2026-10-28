@@ -1,7 +1,12 @@
 import { compileSchema } from '@internal/types-builder/compile-zod';
 import { createScorer } from '@mastra/core/evals';
+import type {
+  AvailableToolSnapshot,
+  ScorerRun,
+  ScorerRunInputForAgent,
+  ScorerRunOutputForAgent,
+} from '@mastra/core/evals';
 import type { MastraModelConfig } from '@mastra/core/llm';
-import type { Tool } from '@mastra/core/tools';
 import { z } from 'zod/v4';
 import {
   extractToolCalls,
@@ -13,7 +18,11 @@ import { TOOL_SELECTION_ACCURACY_INSTRUCTIONS, createAnalyzePrompt, createReason
 
 export interface ToolCallAccuracyOptions {
   model: MastraModelConfig;
-  availableTools: Tool[];
+  availableTools:
+    | readonly AvailableToolSnapshot[]
+    | ((context: {
+        run: ScorerRun<ScorerRunInputForAgent, ScorerRunOutputForAgent>;
+      }) => readonly AvailableToolSnapshot[] | undefined | Promise<readonly AvailableToolSnapshot[] | undefined>);
 }
 
 const analyzeOutputSchema = compileSchema(
@@ -30,8 +39,6 @@ const analyzeOutputSchema = compileSchema(
 );
 
 export function createToolCallAccuracyScorerLLM({ model, availableTools }: ToolCallAccuracyOptions) {
-  const toolDefinitions = availableTools.map(tool => `${tool.id}: ${tool.description}`).join('\n');
-
   return createScorer({
     id: 'llm-tool-call-accuracy-scorer',
     name: 'Tool Call Accuracy (LLM)',
@@ -61,7 +68,12 @@ export function createToolCallAccuracyScorerLLM({ model, availableTools }: ToolC
     .analyze({
       description: 'Analyze the appropriateness of tool selections',
       outputSchema: analyzeOutputSchema,
-      createPrompt: ({ run, results }) => {
+      createPrompt: async ({ run, results }) => {
+        const tools = typeof availableTools === 'function' ? await availableTools({ run }) : availableTools;
+        if (!tools) {
+          throw new Error('Available tools snapshot is missing for this run');
+        }
+        const toolDefinitions = tools.map(tool => `${tool.id}: ${tool.description ?? ''}`).join('\n');
         const userInput = getUserMessageFromRunInput(run.input) ?? '';
         const agentResponse = getAssistantMessageFromRunOutput(run.output) ?? '';
 

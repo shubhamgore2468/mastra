@@ -272,7 +272,18 @@ export type ScorerOptions = {
   isLLMScorer?: boolean;
 };
 
+export const availableToolSnapshotSchema = z.object({
+  id: z.string(),
+  description: z.string().optional(),
+});
+
+export const availableToolsSnapshotSchema = z.array(availableToolSnapshotSchema);
+
+/** Serializable tool metadata captured for an agent run. */
+export type AvailableToolSnapshot = z.infer<typeof availableToolSnapshotSchema>;
+
 export type ScorerRunInputForAgent = {
+  availableTools?: readonly AvailableToolSnapshot[];
   inputMessages: MastraDBMessage[];
   rememberedMessages: MastraDBMessage[];
   systemMessages: CoreMessage[];

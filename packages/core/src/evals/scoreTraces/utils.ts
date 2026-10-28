@@ -1,6 +1,7 @@
 import type { MastraDBMessage } from '../../agent';
 import { SpanType } from '../../observability';
 import type { SpanRecord, TraceRecord } from '../../storage';
+import { availableToolsSnapshotSchema } from '../types';
 import type { ScorerRunInputForAgent, ScorerRunOutputForAgent } from '../types';
 
 // Types for span input/output structures
@@ -307,12 +308,17 @@ export function transformTraceToScorerInputAndOutput(trace: TraceRecord): {
   const currentInputContent = inputMessages[0]?.content.content || '';
   const rememberedMessages = extractRememberedMessages(primaryLLMSpan, currentInputContent);
 
-  const input = {
+  const input: ScorerRunInputForAgent = {
     inputMessages,
     rememberedMessages,
     systemMessages,
     taggedSystemMessages: {}, // Todo: Support tagged system messages
   };
+
+  const savedTools = rootAgentSpan.metadata?.availableTools;
+  if (savedTools !== undefined) {
+    input.availableTools = availableToolsSnapshotSchema.parse(savedTools);
+  }
 
   // Build output
   const toolInvocations = reconstructToolInvocations(spanTree, rootAgentSpan.spanId);

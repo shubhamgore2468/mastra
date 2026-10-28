@@ -7446,6 +7446,7 @@ export class Agent<
   }
 
   async #runScorers({
+    availableTools,
     messageList,
     runId,
     requestContext,
@@ -7456,6 +7457,7 @@ export class Agent<
     memory,
     ...observabilityContext
   }: {
+    availableTools?: ScorerRunInputForAgent['availableTools'];
     messageList: MessageList;
     runId: string;
     memory?: MastraMemory;
@@ -7483,6 +7485,7 @@ export class Agent<
     }
 
     const scorerInput: ScorerRunInputForAgent = {
+      availableTools,
       inputMessages: messageList.getPersisted.input.db(),
       rememberedMessages: messageList.getPersisted.remembered.db(),
       systemMessages: messageList.getSystemMessages(),
@@ -8858,6 +8861,7 @@ export class Agent<
    * @internal
    */
   async #executeOnFinish({
+    availableTools,
     result,
     readOnlyMemory,
     thread: threadAfter,
@@ -9111,6 +9115,7 @@ export class Agent<
     }
 
     await this.#runScorers({
+      availableTools,
       messageList,
       runId,
       requestContext,
