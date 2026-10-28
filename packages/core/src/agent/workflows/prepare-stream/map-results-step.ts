@@ -83,6 +83,11 @@ export function createMapResultsStep<OUTPUT = undefined>({
     const messageList = runScope.getOrThrow(MESSAGE_LIST_KEY);
     const convertedTools = runScope.get(CONVERTED_TOOLS_KEY);
 
+    const availableTools = Object.entries(convertedTools ?? {})
+      .filter(([id]) => !options.activeTools || options.activeTools.includes(id))
+      .map(([id, tool]) => ({ id, description: tool.description as string | undefined }));
+    agentSpan?.update({ metadata: { availableTools } });
+
     let threadCreatedByStep = false;
 
     // Output only ever merges into the latest message, so that is the only earlier-turn message
@@ -422,6 +427,7 @@ export function createMapResultsStep<OUTPUT = undefined>({
               }
               await capabilities.executeOnFinish({
                 result: payload,
+                availableTools,
                 outputText,
                 thread: result.thread,
                 threadId: result.threadId,

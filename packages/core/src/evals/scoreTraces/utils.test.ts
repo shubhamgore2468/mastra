@@ -335,6 +335,18 @@ describe('Transformer Functions', () => {
       expect(result.input.inputMessages[0]?.role).toBe('user');
     });
 
+    it('restores the saved tool snapshot for delayed scoring, including empty tool sets', () => {
+      for (const availableTools of [[{ id: 'search', description: 'Search documents' }], []]) {
+        const trace = TransformerTestScenarios.simpleAgentConversation().buildTrace();
+        const agentSpan = trace.spans.find((span: any) => span.spanType === 'agent_run');
+        agentSpan.metadata = { availableTools };
+        const savedTrace = JSON.parse(JSON.stringify(trace));
+        expect(transformTraceToScorerInputAndOutput(savedTrace).input.availableTools).toEqual(availableTools);
+      }
+      const oldTrace = TransformerTestScenarios.simpleAgentConversation().buildTrace();
+      expect(transformTraceToScorerInputAndOutput(oldTrace).input.availableTools).toBeUndefined();
+    });
+
     it('should extract system messages correctly', () => {
       const trace = TransformerTestScenarios.simpleAgentConversation().buildTrace();
       const result = transformTraceToScorerInputAndOutput(trace);

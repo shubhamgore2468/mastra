@@ -1,8 +1,15 @@
 import { openai } from '@ai-sdk/openai';
+import { convertArrayToReadableStream, MockLanguageModelV2 } from '@internal/ai-sdk-v5/test';
 import { getLLMTestMode } from '@internal/llm-recorder';
 import { setupDummyApiKeys } from '@internal/test-utils';
+import { Agent } from '@mastra/core/agent';
+import { createScorer } from '@mastra/core/evals';
+import type { ScorerRunInputForAgent } from '@mastra/core/evals';
+import { Mastra } from '@mastra/core/mastra';
+import { InMemoryStore } from '@mastra/core/storage';
 import { createTool } from '@mastra/core/tools';
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod/v4';
 import { createAgentTestRun, createTestMessage, extractToolCalls } from '../../utils';
 import { createToolCallAccuracyScorerLLM } from './index';
 
@@ -17,6 +24,176 @@ describe('createToolCallAccuracyScorerLLM', () => {
     createTool({ id: 'calendar-tool', description: 'Manage calendar events' }),
     createTool({ id: 'weather-tool', description: 'Get weather information' }),
   ];
+
+  describe('per-run available tools', () => {
+    it('judges each saved run against its own tools and preserves static lists', async () => {
+      const prompts: string[] = [];
+      const model = new MockLanguageModelV2({
+        doStream: async ({ prompt }) => {
+          prompts.push(JSON.stringify(prompt));
+          return {
+            stream: convertArrayToReadableStream([
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 'text' },
+              { type: 'text-delta', id: 'text', delta: JSON.stringify({ evaluations: [], missingTools: [] }) },
+              { type: 'text-end', id: 'text' },
+              { type: 'finish', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+            ]),
+          };
+        },
+      });
+      const scorer = createToolCallAccuracyScorerLLM({
+        model,
+        availableTools: async ({ run }) => run.input?.availableTools,
+      });
+      const run = createAgentTestRun({
+        inputMessages: [createTestMessage({ id: 'user', role: 'user', content: 'Hello' })],
+        output: [createTestMessage({ id: 'assistant', role: 'assistant', content: 'Hi' })],
+      });
+      for (const tools of [
+        [{ id: 'search', description: 'Search documents' }],
+        [{ id: 'deleteUser', description: 'Delete an account' }],
+        [],
+      ]) {
+        prompts.length = 0;
+        const savedRun = JSON.parse(JSON.stringify({ ...run, input: { ...run.input, availableTools: tools } }));
+        const result = await scorer.run(savedRun);
+        expect(result.score).toBe(1);
+        expect(prompts[0]).toContain(
+          tools[0]?.id === 'search'
+            ? 'search: Search documents'
+            : tools[0]?.id === 'deleteUser'
+              ? 'deleteUser: Delete an account'
+              : 'TOOL REFERENCE:',
+        );
+        expect(prompts[0]).not.toContain(tools[0]?.id === 'search' ? 'deleteUser:' : 'search:');
+      }
+      prompts.length = 0;
+      await createToolCallAccuracyScorerLLM({ model, availableTools }).run(run);
+      expect(prompts[0]).toContain('calculator-tool: Perform mathematical calculations');
+      await expect(scorer.run(run)).rejects.toThrow('Available tools snapshot is missing');
+    });
+  });
+
+  describe('live agent tool snapshots', () => {
+    const searchTool = createTool({
+      id: 'search',
+      description: 'Search documents',
+      inputSchema: z.object({ query: z.string() }),
+      execute: async ({ query }) => ({ results: [query] }),
+    });
+
+    const deleteUserTool = createTool({
+      id: 'deleteUser',
+      description: 'Delete an account',
+      inputSchema: z.object({ userId: z.string() }),
+      execute: async () => ({ deleted: true }),
+    });
+
+    function createScoredAgent(onModelTools?: (names: string[]) => void) {
+      const scoredRuns: Array<{ runId: string; availableTools: ScorerRunInputForAgent['availableTools'] }> = [];
+      const recorder = createScorer({
+        id: 'available-tools-recorder',
+        name: 'Available tools recorder',
+        description: 'Records the run-specific available tools',
+      }).generateScore(({ run }) => {
+        const input = run.input as ScorerRunInputForAgent;
+        scoredRuns.push({ runId: run.runId, availableTools: input.availableTools });
+        return 1;
+      });
+
+      // No external API calls; this is a real Agent -> workflow -> scorer integration test.
+      const model = new MockLanguageModelV2({
+        // generate() uses doGenerate; omitting it triggers the mock's default "Not implemented" error.
+        doGenerate: async ({ tools }) => {
+          onModelTools?.((tools ?? []).map(tool => tool.name));
+          return {
+            content: [{ type: 'text', text: 'Done' }],
+            finishReason: 'stop',
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            warnings: [],
+          };
+        },
+        doStream: async ({ tools }) => {
+          onModelTools?.((tools ?? []).map(tool => tool.name));
+          return {
+            stream: convertArrayToReadableStream([
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 'text' },
+              { type: 'text-delta', id: 'text', delta: 'Done' },
+              { type: 'text-end', id: 'text' },
+              { type: 'finish', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+            ]),
+          };
+        },
+      });
+
+      const agent = new Agent({
+        id: 'available-tools-agent',
+        name: 'Available Tools Agent',
+        model,
+        instructions: 'Respond to the user.',
+        tools: { search: searchTool, deleteUser: deleteUserTool },
+        scorers: { recorder: { scorer: recorder } },
+      });
+      new Mastra({ agents: { agent }, logger: false, storage: new InMemoryStore() });
+      return { agent, scoredRuns };
+    }
+
+    it('passes different activeTools snapshots for consecutive generate() runs', async () => {
+      const { agent, scoredRuns } = createScoredAgent();
+
+      await agent.generate('Find a document', { activeTools: ['search'] });
+      await agent.generate('Delete a user', { activeTools: ['deleteUser'] });
+      await agent.generate('Just reply', { activeTools: [] });
+
+      await vi.waitFor(() => expect(scoredRuns).toHaveLength(3));
+      expect(scoredRuns.map(run => run.availableTools)).toEqual([
+        [{ id: 'search', description: 'Search documents' }],
+        [{ id: 'deleteUser', description: 'Delete an account' }],
+        [],
+      ]);
+      expect(new Set(scoredRuns.map(run => run.runId)).size).toBe(3);
+    });
+
+    it('captures all configured tools when activeTools is omitted', async () => {
+      const { agent, scoredRuns } = createScoredAgent();
+
+      await agent.generate('Hello');
+
+      await vi.waitFor(() => expect(scoredRuns).toHaveLength(1));
+      expect(scoredRuns[0]!.availableTools).toEqual([
+        { id: 'search', description: 'Search documents' },
+        { id: 'deleteUser', description: 'Delete an account' },
+      ]);
+    });
+
+    it('captures the effective tool set after prepareStep filters activeTools', async () => {
+      const modelTools: string[][] = [];
+      const { agent, scoredRuns } = createScoredAgent(names => modelTools.push(names));
+      const prepareStep = vi.fn(() => ({ activeTools: ['search' as const] }));
+
+      // Both tools are configured, but prepareStep hides deleteUser from this model call.
+      await agent.generate('Find a document', { prepareStep });
+
+      expect(prepareStep).toHaveBeenCalled();
+      expect(modelTools).toEqual([['search']]);
+      await vi.waitFor(() => expect(scoredRuns).toHaveLength(1));
+      expect(scoredRuns[0]!.availableTools).toEqual([{ id: 'search', description: 'Search documents' }]);
+    });
+
+    it('forwards the available-tools snapshot for stream() runs', async () => {
+      const { agent, scoredRuns } = createScoredAgent();
+
+      const output = await agent.stream('Find a document', { activeTools: ['search'] });
+      for await (const chunk of output.fullStream) {
+        void chunk; // Drain the stream so onFinish runs and scoring completes.
+      }
+
+      await vi.waitFor(() => expect(scoredRuns).toHaveLength(1));
+      expect(scoredRuns[0]!.availableTools).toEqual([{ id: 'search', description: 'Search documents' }]);
+    });
+  });
 
   describe('Basic Configuration', () => {
     it('should create scorer with correct configuration', () => {

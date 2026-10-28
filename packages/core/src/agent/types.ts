@@ -11,7 +11,13 @@ import type { MastraServerCache } from '../cache/base';
 import type { AgentChannels } from '../channels/agent-channels';
 import type { ChannelConfig } from '../channels/types';
 import type { WaitUntilFn } from '../channels/wait-until';
-import type { MastraScorer, MastraScorers, ScoringFilter, ScoringSamplingConfig } from '../evals';
+import type {
+  MastraScorer,
+  MastraScorers,
+  ScorerRunInputForAgent,
+  ScoringFilter,
+  ScoringSamplingConfig,
+} from '../evals';
 import type { PubSub } from '../events/pubsub';
 import type {
   CoreMessage,
@@ -1265,6 +1271,7 @@ export type AgentStreamOptions<
 export type AgentModelManagerConfig = ModelManagerModelConfig & { enabled: boolean };
 
 export type AgentExecuteOnFinishOptions = {
+  availableTools?: ScorerRunInputForAgent['availableTools'];
   runId: string;
   result: MastraOnFinishCallbackArgs & { object?: unknown };
   thread: StorageThreadType | null | undefined;
